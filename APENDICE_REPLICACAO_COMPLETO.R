@@ -28,7 +28,8 @@
 #           ├── 03b_diagnosticos.R
 #           ├── 04_robustez.R
 #           ├── 05_tabelas_finais.R
-#           └── tabelas_corrigidas.R    
+#           ├── tabelas_corrigidas.R
+#           └── tabelas7_robustez.R
 #       └── resultados/               <- criado automaticamente
 #
 # 2. No RStudio, defina o diretório de trabalho:
@@ -1692,6 +1693,163 @@ cat("SCRIPT 06 CONCLUIDO\n")
 cat("Tabelas salvas em: resultados/Tabelas_Monografia/\n")
 cat("========================================\n\n")
 # ============================================================
+# SCRIPT 07 — TABELAS 7a e 7b: ROBUSTEZ EM WORD (.docx)
+#
+# Gera as Tabelas 7a e 7b (análise de robustez — 5 especificações
+# para Mortalidade e Natalidade) usando os modelos REAIS.
+#
+# PROBLEMA ORIGINAL: tabelas_monografia.R usava set.seed(42)
+# com dados simulados, produzindo coeficientes de Carga SN com
+# sinal POSITIVO na Natalidade — contradição direta com o texto.
+# Este bloco corrige o problema usando os modelos de modelos_ols.rds.
+#
+# Especificações (M1-M5 / N1-N5):
+#   M1/N1: Selic + Carga (sem PIB, sem dummies)
+#   M2/N2: Selic + Carga + D.Pandemia
+#   M3/N3: Selic + Carga + PIB (sem dummies)
+#   M4/N4: Selic + Carga + D.Pandemia + D.Reforma [BASE = mod_mort_p / mod_nat_p]
+#   M5/N5: Selic + Carga + PIB + D.Pandemia + D.Reforma
+#
+# Saída:
+#   resultados/Tabelas_Monografia/tabela7a_robustez_mortalidade.docx
+#   resultados/Tabelas_Monografia/tabela7b_robustez_natalidade.docx
+# ============================================================
+
+cat("========================================\n")
+cat("SCRIPT 07 — TABELAS 7a e 7b (ROBUSTEZ WORD)\n")
+cat("========================================\n\n")
+
+dados_modelo <- readRDS("dados_tratados/dados_modelo.rds")
+modelos      <- readRDS("dados_tratados/modelos_ols.rds")
+
+col_carga_r <- intersect(c("ln_carga_L1", "ln_carga_sn_L1"), names(dados_modelo))[1]
+if (is.na(col_carga_r)) stop("Coluna de carga nao encontrada")
+cat("Coluna de carga:", col_carga_r, "| N:", nrow(dados_modelo), "\n\n")
+
+hac_r <- function(m) NeweyWest(m, prewhite = FALSE, adjust = TRUE)
+
+# Estimar 5 especificacoes — Mortalidade
+M1r <- lm(as.formula(paste("ln_mort ~ ln_selic_L1 +", col_carga_r)),                                          data = dados_modelo)
+M2r <- lm(as.formula(paste("ln_mort ~ ln_selic_L1 +", col_carga_r, "+ d_pandemia")),                          data = dados_modelo)
+M3r <- lm(as.formula(paste("ln_mort ~ ln_selic_L1 +", col_carga_r, "+ pib")),                                  data = dados_modelo)
+M4r <- lm(as.formula(paste("ln_mort ~ ln_selic_L1 +", col_carga_r, "+ d_pandemia + d_reforma")),               data = dados_modelo)
+M5r <- lm(as.formula(paste("ln_mort ~ ln_selic_L1 +", col_carga_r, "+ pib + d_pandemia + d_reforma")),         data = dados_modelo)
+
+# Estimar 5 especificacoes — Natalidade
+N1r <- lm(as.formula(paste("ln_nat ~ ln_selic_L1 +", col_carga_r)),                                            data = dados_modelo)
+N2r <- lm(as.formula(paste("ln_nat ~ ln_selic_L1 +", col_carga_r, "+ d_pandemia")),                            data = dados_modelo)
+N3r <- lm(as.formula(paste("ln_nat ~ ln_selic_L1 +", col_carga_r, "+ pib")),                                   data = dados_modelo)
+N4r <- lm(as.formula(paste("ln_nat ~ ln_selic_L1 +", col_carga_r, "+ pib + d_pandemia + d_reforma")),          data = dados_modelo)
+N5r_formula <- paste("ln_nat ~ ln_selic_L1 +", col_carga_r, "+ pib + d_pandemia + d_reforma")
+if ("ln_ipca" %in% names(dados_modelo) && !all(is.na(dados_modelo$ln_ipca))) {
+  N5r_formula <- paste(N5r_formula, "+ ln_ipca")
+}
+N5r <- lm(as.formula(N5r_formula), data = dados_modelo)
+
+# AIC
+aic_mr <- sapply(list(M1r,M2r,M3r,M4r,M5r), AIC)
+aic_nr <- sapply(list(N1r,N2r,N3r,N4r,N5r), AIC)
+cat(sprintf("AIC Mortalidade: M1=%.2f M2=%.2f M3=%.2f M4=%.2f M5=%.2f\n", aic_mr[1],aic_mr[2],aic_mr[3],aic_mr[4],aic_mr[5]))
+cat(sprintf("AIC Natalidade:  N1=%.2f N2=%.2f N3=%.2f N4=%.2f N5=%.2f\n", aic_nr[1],aic_nr[2],aic_nr[3],aic_nr[4],aic_nr[5]))
+cat(sprintf("Melhor Mort: M%d (%.2f) | Melhor Nat: N%d (%.2f)\n\n", which.min(aic_mr), min(aic_mr), which.min(aic_nr), min(aic_nr)))
+
+# Funcao extratora de coeficiente + erro-padrao HAC
+extrair_r <- function(modelo, var_nome) {
+  ct  <- coeftest(modelo, vcov = hac_r(modelo))
+  rn  <- rownames(ct)
+  if (var_nome %in% rn) {
+    est   <- sprintf("%.3f", ct[var_nome, "Estimate"])
+    p     <- ct[var_nome, "Pr(>|t|)"]
+    ep    <- sprintf("(%.3f)", ct[var_nome, "Std. Error"])
+    stars <- ifelse(p < 0.01, "***", ifelse(p < 0.05, "**", ifelse(p < 0.10, "*", "")))
+    list(coef = paste0(est, stars), ep = ep)
+  } else { list(coef = "", ep = "") }
+}
+r2ajr  <- function(m) sprintf("%.3f", summary(m)$adj.r.squared)
+n_obsr <- function(m) as.character(nrow(model.frame(m)))
+
+# Construir data.frame da tabela
+montar_df_rob <- function(lista_modelos, prefixo, col_carga_nome, tem_ipca = FALSE) {
+  vars <- list(
+    "Intercepto"              = "(Intercept)",
+    "ln(Selic) t-1"           = "ln_selic_L1",
+    "ln(Carga SN/PIB) t-1"    = col_carga_nome,
+    "PIB (var. %)"             = "pib",
+    "D. Pandemia (2020-21)"    = "d_pandemia",
+    "D. Reforma SN (2018+)"    = "d_reforma"
+  )
+  if (tem_ipca) vars[["ln(IPCA)"]] <- "ln_ipca"
+  nomes_col <- paste0(prefixo, 1:5)
+  linhas <- list()
+  for (vlabel in names(vars)) {
+    vcol <- vars[[vlabel]]
+    linhas[[length(linhas)+1]] <- c(vlabel, sapply(lista_modelos, function(m) extrair_r(m, vcol)$coef))
+    linhas[[length(linhas)+1]] <- c("",     sapply(lista_modelos, function(m) extrair_r(m, vcol)$ep))
+  }
+  linhas[[length(linhas)+1]] <- c("R2 Ajust.", sapply(lista_modelos, r2ajr))
+  linhas[[length(linhas)+1]] <- c("N",          sapply(lista_modelos, n_obsr))
+  df <- as.data.frame(do.call(rbind, linhas), stringsAsFactors = FALSE)
+  colnames(df) <- c("Variavel", nomes_col)
+  df
+}
+
+tem_ipca_r <- "ln_ipca" %in% names(dados_modelo) && !all(is.na(dados_modelo$ln_ipca))
+df7a_r <- montar_df_rob(list(M1r,M2r,M3r,M4r,M5r), "M", col_carga_r, FALSE)
+df7b_r <- montar_df_rob(list(N1r,N2r,N3r,N4r,N5r), "N", col_carga_r, tem_ipca_r)
+
+# Funcao para gerar docx
+gerar_docx_rob7 <- function(df, titulo, nota, caminho) {
+  linhas_ep  <- which(df[[1]] == "")
+  linhas_sep <- which(df[[1]] %in% c("R2 Ajust.", "N"))
+  ft <- flextable(df) %>%
+    bold(part = "header") %>%
+    align(part = "header", align = "center") %>%
+    bg(part = "header", bg = "#1F3864") %>%
+    color(part = "header", color = "white") %>%
+    align(j = 1, align = "left", part = "body") %>%
+    align(j = 2:ncol(df), align = "center", part = "body") %>%
+    fontsize(i = linhas_ep, size = 8.5, part = "body") %>%
+    color(i = linhas_ep, color = "#555555", part = "body") %>%
+    bold(i = setdiff(seq_len(nrow(df)), c(linhas_ep, linhas_sep)), part = "body") %>%
+    hline(i = min(linhas_sep) - 1, border = fp_border(color = "#1F3864", width = 1.5), part = "body") %>%
+    bg(i = linhas_sep, bg = "#F2F2F2", part = "body") %>%
+    width(j = 1, width = 3.5, unit = "cm") %>%
+    width(j = 2:ncol(df), width = 2.2, unit = "cm") %>%
+    font(fontname = "Times New Roman", part = "all") %>%
+    fontsize(size = 9.5, part = "body") %>%
+    fontsize(size = 10,  part = "header") %>%
+    border_outer(border = fp_border(color = "#1F3864", width = 1.5)) %>%
+    padding(padding.top = 2, padding.bottom = 2, padding.left = 4, padding.right = 4, part = "all")
+  doc <- read_docx() %>%
+    body_add_par(titulo, style = "heading 3") %>%
+    body_add_flextable(ft) %>%
+    body_add_par(nota, style = "Normal")
+  print(doc, target = caminho)
+  cat("Salvo:", caminho, "\n")
+}
+
+OUT_ROB <- "resultados/Tabelas_Monografia/"
+dir.create(OUT_ROB, recursive = TRUE, showWarnings = FALSE)
+
+gerar_docx_rob7(df7a_r,
+  "Tabela 7a - Robustez: Mortalidade (5 Especificacoes)",
+  paste0("Erros-padrao HAC (Newey-West) entre parenteses. *** p<0,01, ** p<0,05, * p<0,10. ",
+         "M4 = modelo base adotado no texto. ",
+         sprintf("Melhor AIC: M%d (%.2f). N = %d obs. (2009-2021).", which.min(aic_mr), min(aic_mr), nrow(dados_modelo))),
+  paste0(OUT_ROB, "tabela7a_robustez_mortalidade.docx"))
+
+gerar_docx_rob7(df7b_r,
+  "Tabela 7b - Robustez: Natalidade (5 Especificacoes)",
+  paste0("Erros-padrao HAC (Newey-West) entre parenteses. *** p<0,01, ** p<0,05, * p<0,10. ",
+         "N4 = modelo base adotado no texto. ",
+         sprintf("Melhor AIC: N%d (%.2f). N = %d obs. (2009-2021).", which.min(aic_nr), min(aic_nr), nrow(dados_modelo))),
+  paste0(OUT_ROB, "tabela7b_robustez_natalidade.docx"))
+
+cat("\n========================================\n")
+cat("SCRIPT 07 CONCLUIDO\n")
+cat("Tabelas 7a e 7b salvas em: resultados/Tabelas_Monografia/\n")
+cat("========================================\n\n")
+
 # SCRIPT 00b — REGISTRO DO AMBIENTE DE REPLICACAO
 #
 # Padrao exigido pelas principais revistas de economia
